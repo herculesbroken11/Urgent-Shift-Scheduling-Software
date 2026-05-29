@@ -1,0 +1,190 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Space+Grotesk:wght@300..700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 220 20% 97%;
+    --foreground: 220 30% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 30% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 30% 10%;
+
+    --primary: 225 65% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 15% 92%;
+    --secondary-foreground: 220 30% 15%;
+
+    --muted: 220 15% 94%;
+    --muted-foreground: 220 10% 45%;
+
+    --accent: 170 55% 42%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 225 65% 45%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 225 35% 18%;
+    --sidebar-foreground: 220 15% 90%;
+    --sidebar-primary: 225 65% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 225 30% 25%;
+    --sidebar-accent-foreground: 220 15% 92%;
+    --sidebar-border: 225 25% 25%;
+    --sidebar-ring: 225 65% 60%;
+
+    /* Role accent colors */
+    --role-admin: 225 65% 45%;
+    --role-scheduler: 260 55% 50%;
+    --role-requester: 170 55% 42%;
+    --role-interpreter: 35 85% 50%;
+
+    /* Success/Warning/Info */
+    --success: 152 60% 40%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+    --info: 205 80% 50%;
+    --info-foreground: 0 0% 100%;
+
+    --chart-text: 220 10% 40%;
+    --chart-grid: 220 15% 85%;
+  }
+
+  .dark {
+    --background: 225 30% 8%;
+    --foreground: 220 15% 92%;
+
+    --card: 225 25% 12%;
+    --card-foreground: 220 15% 92%;
+
+    --popover: 225 25% 12%;
+    --popover-foreground: 220 15% 92%;
+
+    --primary: 225 65% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 225 20% 18%;
+    --secondary-foreground: 220 15% 90%;
+
+    --muted: 225 20% 16%;
+    --muted-foreground: 220 10% 55%;
+
+    --accent: 170 55% 45%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 62% 40%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 225 20% 18%;
+    --input: 225 20% 18%;
+    --ring: 225 65% 60%;
+
+    --sidebar-background: 225 30% 8%;
+    --sidebar-foreground: 220 15% 85%;
+    --sidebar-primary: 225 65% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 225 25% 15%;
+    --sidebar-accent-foreground: 220 15% 90%;
+    --sidebar-border: 225 20% 15%;
+    --sidebar-ring: 225 65% 60%;
+
+    --chart-text: 220 10% 65%;
+    --chart-grid: 225 20% 22%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+
+  /* Smooth transitions for interactive elements */
+  button, a, [role="button"], [role="tab"] {
+    @apply transition-all duration-150;
+  }
+
+  /* Subtle press effect for interactive elements */
+  button:not(:disabled):active,
+  [role="button"]:not(:disabled):active {
+    transform: scale(0.98);
+  }
+
+  /* Table row hover polish */
+  tbody tr {
+    @apply transition-colors duration-100;
+  }
+
+  /* Card hover lift */
+  .card-interactive {
+    @apply transition-all duration-150;
+  }
+  .card-interactive:hover {
+    @apply shadow-md;
+  }
+
+  /* Consistent focus ring */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+/* ===== ENTERPRISE SPACING & DENSITY UTILITIES ===== */
+@layer utilities {
+  /* Page-level layout */
+  .page-container {
+    @apply px-4 py-4 space-y-4 sm:px-6 sm:py-5 sm:space-y-5;
+  }
+
+  /* Page header pattern */
+  .page-header {
+    @apply flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between;
+  }
+
+  .page-title {
+    @apply text-xl font-semibold tracking-tight sm:text-2xl;
+  }
+
+  .page-description {
+    @apply text-sm text-muted-foreground;
+  }
+
+  /* Section spacing */
+  .section-gap {
+    @apply space-y-4;
+  }
+
+  /* Form spacing */
+  .form-grid {
+    @apply grid gap-4;
+  }
+
+  .form-row {
+    @apply space-y-1.5;
+  }
+}

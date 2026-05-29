@@ -1,0 +1,1 @@
+ALTER VIEW public.appointments_live SET (security_invoker = on);

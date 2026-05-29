@@ -1,0 +1,1 @@
+UPDATE public.profiles SET first_name = 'Platform', last_name = 'Admin', is_active = true WHERE id = '20afcceb-11bf-46ce-9405-1dfe39573093' AND (first_name IS NULL OR first_name = '');

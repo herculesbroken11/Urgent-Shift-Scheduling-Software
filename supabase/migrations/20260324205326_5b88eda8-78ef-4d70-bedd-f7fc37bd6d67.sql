@@ -1,0 +1,1 @@
+UPDATE platform_billing_config SET effective_start_date = '2026-01-01' WHERE id = 'e7950d88-3468-47b5-a8e7-7728fd25140d';
