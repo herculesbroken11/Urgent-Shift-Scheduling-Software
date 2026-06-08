@@ -23,3 +23,7 @@ project_id = "jznpmbkmipajyhlivtgy"
     verify_jwt = false
   [functions.manage-join-request]
     verify_jwt = false
+  [functions.accept-invitation]
+    verify_jwt = false
+  [functions.seed-platform-owner]
+    verify_jwt = false

@@ -1,6 +1,7 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { useDemo } from "@/contexts/DemoContext";
 import { useDemoData } from "@/contexts/DemoDataContext";
+import { isDemoFeatureEnabled } from "@/lib/demo-config";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -92,6 +93,30 @@ export default function DemoSelect() {
   const navigate = useNavigate();
   const { startDemo } = useDemo();
   const { resetUserData } = useDemoData();
+
+  if (!isDemoFeatureEnabled()) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 text-center">
+        <div className="max-w-md space-y-4">
+          <h1 className="font-['Space_Grotesk'] text-2xl font-bold text-foreground">
+            Demo not available
+          </h1>
+          <p className="text-muted-foreground">
+            Interactive demo mode is disabled in this environment. Sign in with your
+            account or contact your administrator for access.
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-center">
+            <Button asChild>
+              <Link to="/login">Sign in</Link>
+            </Button>
+            <Button variant="outline" asChild>
+              <Link to="/">Back to home</Link>
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleSelect = (role: AppRole) => {
     startDemo(role);

@@ -19,5 +19,10 @@ export default defineConfig({
     command: "npm run dev",
     port: 8080,
     reuseExistingServer: true,
+    env: {
+      ...process.env,
+      // E2E demo specs require the opt-in demo flag (production builds leave this off).
+      VITE_ENABLE_DEMO_MODE: "true",
+    },
   },
 });

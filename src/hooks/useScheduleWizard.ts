@@ -8,6 +8,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { useAgencyTimezone } from "./useAgencyTimezone";
 import { localToUtcIso } from "@/lib/agency-timezone";
+import { assignInterpreterWithConflictCheck } from "@/lib/scheduling-rpc";
 
 export interface UnassignedAppointment {
   id: string;
@@ -362,86 +363,27 @@ export function useAssignAppointment() {
     mutationFn: async (input: AssignInput) => {
       if (!profile?.agency_id) throw new Error("No agency context");
 
-      const isLastMinute = input.priorStatus === "requested_last_minute";
-      const newStatus =
-        input.mode === "confirm"
-          ? "interpreter_confirmed"
-          : isLastMinute
-          ? "interpreter_assigned_last_minute"
-          : "interpreter_assigned";
-
-      const update: any = {
-        interpreter_id: input.interpreterId,
-        status: newStatus,
-        assignment_method: input.mode === "confirm" ? "admin_confirmed" : "manual",
-        updated_at: new Date().toISOString(),
-      };
-
-      // Override-with-reason: append to custom_fields.override_log
-      if (input.overrideReason) {
-        const { data: current } = await supabase
-          .from("appointments")
-          .select("custom_fields")
-          .eq("id", input.appointmentId)
-          .eq("agency_id", profile.agency_id)
-          .single();
-        const existing = (current?.custom_fields as any) ?? {};
-        const log = Array.isArray(existing.override_log) ? existing.override_log : [];
-        log.push({
-          overridden_by: profile.id,
-          overridden_at: new Date().toISOString(),
-          reason: input.overrideReason,
-          assigned_interpreter_id: input.interpreterId,
-          conflicting_entity_type: input.conflict?.type ?? null,
-          conflicting_entity_id: input.conflict?.conflicting_entity_id ?? null,
-          conflict_start: input.conflict?.start ?? null,
-          conflict_end: input.conflict?.end ?? null,
-        });
-        update.custom_fields = { ...existing, override_log: log };
-      }
+      const rpcMode = input.mode === "confirm" ? "confirm" : "offer";
+      const assigned = await assignInterpreterWithConflictCheck(
+        input.appointmentId,
+        input.interpreterId,
+        rpcMode,
+        input.overrideReason,
+      );
 
       const { data, error } = await supabase
         .from("appointments")
-        .update(update)
-        .eq("id", input.appointmentId)
-        .eq("agency_id", profile.agency_id)
         .select(`
           id, title, status, scheduled_start, scheduled_end, interpreter_id,
           requester_id, agency_id, cancellation_reason,
           customers ( name ), languages ( name )
         `)
+        .eq("id", input.appointmentId)
+        .eq("agency_id", profile.agency_id)
         .single();
       if (error) throw error;
-
-      // Surface override in appointment_history audit log so admins can find it
-      if (input.overrideReason) {
-        const auditPayload = {
-          override: true,
-          reason: input.overrideReason,
-          assigned_interpreter_id: input.interpreterId,
-          conflicting_entity_type: input.conflict?.type ?? null,
-          conflicting_entity_id: input.conflict?.conflicting_entity_id ?? null,
-          conflict_start: input.conflict?.start ?? null,
-          conflict_end: input.conflict?.end ?? null,
-          new_status: newStatus,
-          title: (data as any)?.title ?? null,
-        };
-        const { error: auditErr } = await supabase
-          .from("appointment_history" as any)
-          .insert({
-            appointment_id: input.appointmentId,
-            agency_id: profile.agency_id,
-            changed_by: profile.id,
-            action: "override_conflict",
-            old_data: null,
-            new_data: auditPayload,
-            changed_fields: ["override_conflict"],
-          });
-        if (auditErr) {
-          // Non-blocking — primary update already committed
-          console.warn("Override audit insert failed:", auditErr);
-        }
-      }
+      // Prefer RPC-returned status/interpreter when join fetch is stale
+      const merged = { ...data, ...assigned };
 
       // Fire notification (in_app + sms if phone)
       try {
@@ -450,9 +392,9 @@ export function useAssignAppointment() {
           .select("phone, first_name, last_name")
           .eq("id", input.interpreterId)
           .single();
-        const label = (data as any)?.languages?.name
-          ? `${(data as any).languages.name} Interpreting`
-          : (data?.title ?? "Upcoming Assignment");
+        const label = (merged as any)?.languages?.name
+          ? `${(merged as any).languages.name} Interpreting`
+          : (merged?.title ?? "Upcoming Assignment");
         const title = "New Appointment Assigned";
         const message = `You have been assigned to appointment: ${label}`;
 
@@ -483,7 +425,7 @@ export function useAssignAppointment() {
         console.warn("Notification failed (non-blocking):", e);
       }
 
-      return data;
+      return merged;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["wizard-unassigned"] });

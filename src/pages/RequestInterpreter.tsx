@@ -273,7 +273,12 @@ export default function RequestInterpreter() {
 
     // Determine if this is a last-minute request
     const utcStart = localToUtcIso(form.start_date, form.start_time, agencyTz);
-    const utcEnd = localToUtcIso(form.end_date, form.end_time, agencyTz);
+    const utcEnd = localToUtcIso(form.end_date || form.start_date, form.end_time, agencyTz);
+
+    if (utcStart && utcEnd && new Date(utcEnd) <= new Date(utcStart)) {
+      toast.error("End time must be after start time.");
+      return;
+    }
 
     let isLastMinute = false;
     if (utcStart) {

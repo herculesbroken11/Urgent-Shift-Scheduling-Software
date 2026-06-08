@@ -3,6 +3,7 @@ import { Session, User } from "@supabase/supabase-js";
 import { supabase } from "@/integrations/supabase/client";
 import { getUserProfile, getUserRoles, UserProfile, UserRole, AppRole } from "@/lib/supabase-helpers";
 import { useDemo } from "@/contexts/DemoContext";
+import { clearDemoSessionStorage } from "@/lib/demo-config";
 
 interface AuthContextType {
   session: Session | null;
@@ -83,10 +84,18 @@ export const AuthProvider = forwardRef<HTMLElement, { children: React.ReactNode 
       exitDemo();
       return;
     }
+    try {
+      sessionStorage.removeItem("pw_recovery");
+      clearDemoSessionStorage();
+    } catch {
+      // ignore storage errors
+    }
+    setProfile(null);
+    setRoles([]);
     await supabase.auth.signOut();
   };
 
-  // Use demo data when in demo mode
+  // DemoContext gates isDemoMode behind VITE_ENABLE_DEMO_MODE — fake session never applies in production default builds.
   const effectiveProfile = isDemoMode ? demoProfile : profile;
   const effectiveRoles = isDemoMode ? demoRoles : roles;
   const effectiveUser = isDemoMode ? ({ id: demoProfile?.id } as User) : user;
@@ -101,6 +110,7 @@ export const AuthProvider = forwardRef<HTMLElement, { children: React.ReactNode 
 
   return (
     <AuthContext.Provider value={{
+      // Placeholder session only when demo feature is explicitly enabled (see demo-config.ts).
       session: isDemoMode ? ({} as Session) : session,
       user: effectiveUser,
       profile: effectiveProfile,

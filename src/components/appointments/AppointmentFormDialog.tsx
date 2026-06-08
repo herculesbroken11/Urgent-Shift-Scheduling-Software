@@ -29,6 +29,12 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useDemoData } from "@/contexts/DemoDataContext";
 import { useAgencyTimezone } from "@/hooks/useAgencyTimezone";
 import { utcToLocalParts, localToUtcIso } from "@/lib/agency-timezone";
+import {
+  assignInterpreterWithConflictCheck,
+  checkInterpreterScheduleConflicts,
+  isInterpreterScheduleConflictError,
+} from "@/lib/scheduling-rpc";
+import type { InterpreterAssignMeta } from "@/hooks/useAgencyData";
 
 import { toast } from "sonner";
 
@@ -159,6 +165,8 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
   const [resendOpen, setResendOpen] = useState(false);
   const [threadCreating, setThreadCreating] = useState(false);
   const [conflictAcknowledged, setConflictAcknowledged] = useState(false);
+  const [assignOverrideReason, setAssignOverrideReason] = useState("");
+  const [scheduleConflictPending, setScheduleConflictPending] = useState(false);
 
   // Recurrence state
   const [recurrenceEnabled, setRecurrenceEnabled] = useState(false);
@@ -567,9 +575,55 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const buildAssignMeta = (): InterpreterAssignMeta | undefined => {
+    if (!form.interpreter_id) return undefined;
+    if (isEditing && form.interpreter_id === editingAppointment?.interpreter_id) return undefined;
+    return {
+      assignInterpreterId: form.interpreter_id,
+      assignMode: isAdminConfirms && isAdminOrScheduler ? "confirm" : "offer",
+      assignOverrideReason: assignOverrideReason.trim() || undefined,
+    };
+  };
+
+  const stripInterpreterFromInput = (input: Record<string, unknown>) => {
+    delete input.interpreter_id;
+    delete input.status;
+    delete input.assignment_method;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const input = buildInput();
+
+    if (input.scheduled_start && input.scheduled_end) {
+      if (new Date(input.scheduled_end) <= new Date(input.scheduled_start)) {
+        toast.error("End time must be after start time.");
+        return;
+      }
+    }
+
+    const assignMeta = buildAssignMeta();
+    if (assignMeta?.assignInterpreterId && input.scheduled_start && input.scheduled_end && !isDemoMode) {
+      try {
+        const check = await checkInterpreterScheduleConflicts(
+          assignMeta.assignInterpreterId,
+          input.scheduled_start,
+          input.scheduled_end,
+          isEditing ? editingAppointment?.id : undefined,
+        );
+        if (check.has_conflict) {
+          setScheduleConflictPending(true);
+          if (!assignMeta.assignOverrideReason || assignMeta.assignOverrideReason.length < 3) {
+            toast.error("Interpreter has a scheduling conflict. Enter an override reason (min 3 characters) to continue.");
+            return;
+          }
+        } else {
+          setScheduleConflictPending(false);
+        }
+      } catch (err) {
+        console.warn("Conflict pre-check failed:", err);
+      }
+    }
 
     if (isEditing) {
       // If it's part of a series, show series edit dialog
@@ -579,12 +633,13 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
           input.status = getUnassignedStatus();
           input.interpreter_id = null;
         }
-        if (form.interpreter_id && !editingAppointment.interpreter_id) {
+        if (assignMeta) stripInterpreterFromInput(input);
+        else if (form.interpreter_id && !editingAppointment.interpreter_id) {
           input.status = getAssignedStatus();
           const method = getAssignmentMethod();
           if (method) input.assignment_method = method;
         }
-        setPendingSubmitData(input);
+        setPendingSubmitData({ ...input, ...assignMeta });
         setSeriesDialogMode("edit");
         setSeriesDialogOpen(true);
         return;
@@ -594,34 +649,30 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
       if (!form.interpreter_id && editingAppointment.interpreter_id) {
         input.status = getUnassignedStatus();
         input.interpreter_id = null;
-      }
-      if (form.interpreter_id && !editingAppointment.interpreter_id) {
+      } else if (assignMeta) {
+        stripInterpreterFromInput(input);
+      } else if (form.interpreter_id && !editingAppointment.interpreter_id) {
         input.status = getAssignedStatus();
         const method = getAssignmentMethod();
         if (method) input.assignment_method = method;
       }
-      // Admin Confirms: if changing interpreter to one with admin_confirms and status is unassigned
-      if (
-        isAdminOrScheduler &&
-        isAdminConfirms &&
-        form.interpreter_id &&
-        editingAppointment.interpreter_id !== form.interpreter_id &&
-        ["requested", "requested_last_minute"].includes(editingAppointment.status)
-      ) {
-        input.status = "interpreter_confirmed";
-        input.assignment_method = "admin_confirmed";
-      }
 
       const locationChanged = isEditing && form.location_id !== (originalLocationId || "") && form.location_id !== "";
 
-      update.mutate({ id: editingAppointment.id, ...input }, {
-        onSuccess: (data: any) => {
-          if (locationChanged && !isDemoMode) {
-            sendLocationChangeNotifications(data);
-          }
-          onOpenChange(false);
-        },
-      });
+      try {
+        await update.mutateAsync({ id: editingAppointment.id, ...input, ...assignMeta });
+        if (locationChanged && !isDemoMode) {
+          const { data } = await supabase.from("appointments").select().eq("id", editingAppointment.id).single();
+          if (data) sendLocationChangeNotifications(data);
+        }
+        setAssignOverrideReason("");
+        setScheduleConflictPending(false);
+        onOpenChange(false);
+      } catch (err) {
+        if (isInterpreterScheduleConflictError(err)) {
+          setScheduleConflictPending(true);
+        }
+      }
     } else {
       // New appointment — check if recurring
       if (recurrenceEnabled && form.start_date) {
@@ -630,37 +681,53 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
           toast.error("Recurrence must generate at least 2 occurrences.");
           return;
         }
-        if (form.interpreter_id) {
+        if (assignMeta) stripInterpreterFromInput(input);
+        else if (form.interpreter_id) {
           input.status = getAssignedStatus();
           const method = getAssignmentMethod();
           if (method) input.assignment_method = method;
         }
         input.recurrence_rule = recurrenceRule;
-        bulkCreate.mutate(
-          { baseInput: input, dates, startTime: form.start_time, endTime: form.end_time },
-          {
-            onSuccess: () => {
-              onOpenChange(false);
-              setForm(emptyForm);
-              setCustomerId("");
-              setRecurrenceEnabled(false);
-              setRecurrenceRule(defaultRecurrenceRule);
-            },
+        try {
+          await bulkCreate.mutateAsync({
+            baseInput: input,
+            dates,
+            startTime: form.start_time,
+            endTime: form.end_time,
+            assignMode: assignMeta?.assignMode,
+            assignOverrideReason: assignMeta?.assignOverrideReason,
+          });
+          onOpenChange(false);
+          setForm(emptyForm);
+          setCustomerId("");
+          setRecurrenceEnabled(false);
+          setRecurrenceRule(defaultRecurrenceRule);
+          setAssignOverrideReason("");
+          setScheduleConflictPending(false);
+        } catch (err) {
+          if (isInterpreterScheduleConflictError(err)) {
+            setScheduleConflictPending(true);
           }
-        );
+        }
       } else {
-        if (form.interpreter_id) {
+        if (assignMeta) stripInterpreterFromInput(input);
+        else if (form.interpreter_id) {
           input.status = getAssignedStatus();
           const method = getAssignmentMethod();
           if (method) input.assignment_method = method;
         }
-        create.mutate(input, {
-          onSuccess: () => {
-            onOpenChange(false);
-            setForm(emptyForm);
-            setCustomerId("");
-          },
-        });
+        try {
+          await create.mutateAsync({ ...input, ...assignMeta });
+          onOpenChange(false);
+          setForm(emptyForm);
+          setCustomerId("");
+          setAssignOverrideReason("");
+          setScheduleConflictPending(false);
+        } catch (err) {
+          if (isInterpreterScheduleConflictError(err)) {
+            setScheduleConflictPending(true);
+          }
+        }
       }
     }
   };
@@ -672,19 +739,53 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
     const parentId = editingAppointment.parent_recurring_id || editingAppointment.id;
 
     if (seriesDialogMode === "edit") {
+      const {
+        assignInterpreterId,
+        assignMode,
+        assignOverrideReason: seriesOverride,
+        ...seriesUpdateData
+      } = pendingSubmitData ?? {};
+      const seriesAssignMeta: InterpreterAssignMeta | undefined = assignInterpreterId
+        ? { assignInterpreterId, assignMode, assignOverrideReason: seriesOverride }
+        : undefined;
+
       if (choice === "this") {
-        update.mutate({ id: editingAppointment.id, ...pendingSubmitData }, {
-          onSuccess: () => onOpenChange(false),
-        });
+        update.mutate(
+          { id: editingAppointment.id, ...seriesUpdateData, ...seriesAssignMeta },
+          { onSuccess: () => onOpenChange(false) },
+        );
       } else if (choice === "future" || choice === "all") {
         bulkUpdate.mutate(
           {
             parentId,
-            updateData: pendingSubmitData,
+            updateData: seriesUpdateData,
             scope: choice,
             currentAppointmentDate: editingAppointment.scheduled_start,
           },
-          { onSuccess: () => onOpenChange(false) }
+          {
+            onSuccess: async () => {
+              if (seriesAssignMeta?.assignInterpreterId) {
+                const { data: series } = await supabase
+                  .from("appointments")
+                  .select("id, scheduled_start")
+                  .or(`id.eq.${parentId},parent_recurring_id.eq.${parentId}`);
+                const toAssign = (series ?? []).filter((s) =>
+                  choice === "all"
+                  || !editingAppointment.scheduled_start
+                  || (s.scheduled_start && s.scheduled_start >= editingAppointment.scheduled_start),
+                );
+                for (const row of toAssign) {
+                  await assignInterpreterWithConflictCheck(
+                    row.id,
+                    seriesAssignMeta.assignInterpreterId!,
+                    seriesAssignMeta.assignMode === "confirm" ? "confirm" : "offer",
+                    seriesAssignMeta.assignOverrideReason,
+                  );
+                }
+              }
+              onOpenChange(false);
+            },
+          },
         );
       }
     } else if (seriesDialogMode === "delete") {
@@ -920,6 +1021,21 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
           </div>
 
           {/* Conflict warning */}
+          {scheduleConflictPending && form.interpreter_id && (
+            <Alert variant="destructive">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="space-y-2">
+                <p className="font-medium">Interpreter has an overlapping appointment at this time.</p>
+                <Textarea
+                  placeholder="Override reason (required, min 3 characters)"
+                  value={assignOverrideReason}
+                  onChange={(e) => setAssignOverrideReason(e.target.value)}
+                  rows={2}
+                />
+              </AlertDescription>
+            </Alert>
+          )}
+
           {conflictWarning && (
             <Alert variant="destructive" className="border-destructive/50 bg-destructive/10">
               <AlertTriangle className="h-4 w-4" />
@@ -1207,7 +1323,14 @@ export function AppointmentFormDialog({ open, onOpenChange, initialValues, editi
               </Button>
             )}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={isPending || (!!conflictWarning && !conflictAcknowledged)}>
+            <Button
+              type="submit"
+              disabled={
+                isPending
+                || (!!conflictWarning && !conflictAcknowledged)
+                || (scheduleConflictPending && assignOverrideReason.trim().length < 3)
+              }
+            >
               {isPending ? "Saving…" : recurrenceEnabled && !isEditing
                 ? `Create ${form.start_date ? generateOccurrenceDates(form.start_date, recurrenceRule).length : ""} Appointments`
                 : isEditing ? "Save Changes" : "Create Appointment"}

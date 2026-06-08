@@ -1,5 +1,10 @@
-import React, { createContext, useContext, useState, useCallback, forwardRef } from "react";
+import React, { createContext, useContext, useState, useCallback, forwardRef, useEffect } from "react";
 import { AppRole, UserProfile, UserRole } from "@/lib/supabase-helpers";
+import {
+  clearDemoSessionStorage,
+  DEMO_SESSION_KEY,
+  isDemoFeatureEnabled,
+} from "@/lib/demo-config";
 
 interface DemoContextType {
   isDemoMode: boolean;
@@ -66,27 +71,43 @@ const DemoContext = createContext<DemoContextType | undefined>(undefined);
 export const DemoProvider = forwardRef<HTMLElement, { children: React.ReactNode }>(
   function DemoProvider({ children }, _ref) {
   const [demoRole, setDemoRole] = useState<AppRole | null>(() => {
-    const stored = sessionStorage.getItem("demo_role");
+    if (!isDemoFeatureEnabled()) {
+      clearDemoSessionStorage();
+      return null;
+    }
+    const stored = sessionStorage.getItem(DEMO_SESSION_KEY);
     return stored as AppRole | null;
   });
   const [isSwitchingRole, setIsSwitchingRole] = useState(false);
 
-  const isDemoMode = demoRole !== null || isSwitchingRole;
+  // Clear stale demo session if feature was disabled (e.g. production build).
+  useEffect(() => {
+    if (!isDemoFeatureEnabled()) {
+      clearDemoSessionStorage();
+      setDemoRole(null);
+      setIsSwitchingRole(false);
+    }
+  }, []);
+
+  const isDemoMode =
+    isDemoFeatureEnabled() && (demoRole !== null || isSwitchingRole);
 
   const startDemo = useCallback((role: AppRole) => {
-    sessionStorage.setItem("demo_role", role);
+    if (!isDemoFeatureEnabled()) return;
+    sessionStorage.setItem(DEMO_SESSION_KEY, role);
     setDemoRole(role);
     setIsSwitchingRole(false);
   }, []);
 
   const exitDemo = useCallback(() => {
-    sessionStorage.removeItem("demo_role");
+    clearDemoSessionStorage();
     setIsSwitchingRole(false);
     setDemoRole(null);
   }, []);
 
   const switchRole = useCallback(() => {
-    sessionStorage.removeItem("demo_role");
+    if (!isDemoFeatureEnabled()) return;
+    clearDemoSessionStorage();
     setIsSwitchingRole(true);
     setDemoRole(null);
   }, []);

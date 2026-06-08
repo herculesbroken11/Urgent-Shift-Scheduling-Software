@@ -26,3 +26,6 @@ dist-ssr
 test-results/
 playright-report/
 e2e/.auth/
+
+# Internal checkpoint reports (local working notes)
+checkpoints/

@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { isDemoFeatureEnabled } from "@/lib/demo-config";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -206,9 +207,11 @@ const Landing = () => {
               <Button size="lg" className="gap-2 text-base shadow-xl shadow-primary/30 h-12 px-8" asChild>
                 <Link to="/signup">Start Free Trial <ArrowRight className="h-4 w-4" /></Link>
               </Button>
-              <Button size="lg" variant="secondary" className="gap-2 text-base h-12 px-8 bg-white text-[hsl(var(--sidebar-background))] hover:bg-white/90 font-semibold shadow-xl" asChild>
-                <Link to="/demo">Explore Demo</Link>
-              </Button>
+              {isDemoFeatureEnabled() && (
+                <Button size="lg" variant="secondary" className="gap-2 text-base h-12 px-8 bg-white text-[hsl(var(--sidebar-background))] hover:bg-white/90 font-semibold shadow-xl" asChild>
+                  <Link to="/demo">Explore Demo</Link>
+                </Button>
+              )}
             </motion.div>
           </motion.div>
 

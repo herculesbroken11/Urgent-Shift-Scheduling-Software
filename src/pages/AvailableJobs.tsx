@@ -12,6 +12,7 @@ import { useAdaptedQuery, useAdaptedMutation } from "@/lib/data-adapter";
 import { useAgencyTimezone } from "@/hooks/useAgencyTimezone";
 import { formatDateTimeInTz } from "@/lib/agency-timezone";
 import { getStatusLabel } from "@/lib/status-labels";
+import { assignInterpreterWithConflictCheck, isInterpreterScheduleConflictError } from "@/lib/scheduling-rpc";
 
 export default function AvailableJobs() {
   const { user, profile } = useAuth();
@@ -81,16 +82,17 @@ export default function AvailableJobs() {
 
   const claimJob = useAdaptedMutation<string>({
     mutationFn: async (appointmentId: string) => {
-      const { data, error, count } = await supabase
-        .from("appointments")
-        .update({ interpreter_id: user!.id, status: "interpreter_confirmed" as any, assignment_method: "self_claim" as any })
-        .eq("id", appointmentId)
-        .is("interpreter_id", null)
-        .in("status", ["requested", "requested_last_minute", "reassignment_needed"])
-        .select("id");
-      if (error) throw error;
-      if (!data || data.length === 0) {
-        throw new Error("This job was already claimed or assigned. Refreshing list.");
+      try {
+        await assignInterpreterWithConflictCheck(appointmentId, user!.id, "self_claim");
+      } catch (e: unknown) {
+        if (isInterpreterScheduleConflictError(e)) {
+          throw new Error("You already have an overlapping appointment at this time.");
+        }
+        const msg = (e as { message?: string })?.message ?? "";
+        if (msg.includes("already assigned")) {
+          throw new Error("This job was already claimed or assigned. Refreshing list.");
+        }
+        throw e;
       }
     },
     demoFn: (appointmentId: string) => {

@@ -112,39 +112,50 @@ Deno.serve(async (req) => {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
 
-  // Auth: only allow calls with a valid service-role key or authenticated admin
+  // Auth: cron secret, service-role key, or authenticated agency_admin only.
   const authHeader = req.headers.get("Authorization");
+  const cronSecret = Deno.env.get("REMINDER_CRON_SECRET");
+  const cronHeader = req.headers.get("x-reminder-cron-secret");
   const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
-  if (authHeader) {
+  let authorized = false;
+
+  if (cronSecret && (cronHeader === cronSecret || authHeader === `Bearer ${cronSecret}`)) {
+    authorized = true;
+  } else if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.replace("Bearer ", "");
-    // Allow service-role key directly (for cron/internal calls)
-    if (token !== serviceKey) {
-      // Verify as user JWT — must be agency_admin
+    if (token === serviceKey) {
+      authorized = true;
+    } else {
       const anonKey = Deno.env.get("SUPABASE_ANON_KEY")!;
       const anonClient = createClient(supabaseUrl, anonKey, {
         global: { headers: { Authorization: authHeader } },
       });
       const { data: claimsData, error: claimsError } = await anonClient.auth.getClaims(token);
-      if (claimsError || !claimsData?.claims?.sub) {
-        return new Response(JSON.stringify({ error: "Unauthorized" }), {
-          status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      const userId = claimsData.claims.sub as string;
-      const svcClient = createClient(supabaseUrl, serviceKey);
-      const { data: roles } = await svcClient
-        .from("user_roles").select("role").eq("user_id", userId);
-      const isAdmin = (roles || []).some((r: { role: string }) => r.role === "agency_admin");
-      if (!isAdmin) {
-        return new Response(JSON.stringify({ error: "Forbidden: admin role required" }), {
-          status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+      if (!claimsError && claimsData?.claims?.sub) {
+        const userId = claimsData.claims.sub as string;
+        const svcClient = createClient(supabaseUrl, serviceKey);
+        const { data: roles } = await svcClient
+          .from("user_roles")
+          .select("role")
+          .eq("user_id", userId);
+        const isAdmin = (roles || []).some((r: { role: string }) => r.role === "agency_admin");
+        if (isAdmin) authorized = true;
       }
     }
   }
-  // If no auth header, allow the call (for backward-compatible cron invocations via Supabase infrastructure)
+
+  if (!authorized) {
+    const status = authHeader || cronHeader ? 403 : 401;
+    const message = cronSecret
+      ? "Unauthorized: valid cron secret, service role, or agency admin required"
+      : "Unauthorized: REMINDER_CRON_SECRET not configured; service role or agency admin required";
+    return new Response(JSON.stringify({ error: message }), {
+      status,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
   const adminClient = createClient(supabaseUrl, serviceKey);
 

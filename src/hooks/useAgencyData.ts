@@ -6,6 +6,20 @@ import { DEMO_AGENCY_ID } from "@/contexts/DemoContext";
 import { useAdaptedQuery, useAdaptedMutation } from "@/lib/data-adapter";
 import type { Tables, TablesInsert, TablesUpdate } from "@/integrations/supabase/types";
 import { format, addMinutes, differenceInMinutes } from "date-fns";
+import { localToUtcIso } from "@/lib/agency-timezone";
+import { useAgencyTimezone } from "./useAgencyTimezone";
+import {
+  assignInterpreterWithConflictCheck,
+  checkInterpreterScheduleConflictsBatch,
+  type AssignMode,
+} from "@/lib/scheduling-rpc";
+
+/** Optional interpreter assignment handled server-side after insert/update */
+export type InterpreterAssignMeta = {
+  assignInterpreterId?: string;
+  assignMode?: AssignMode;
+  assignOverrideReason?: string;
+};
 
 export type Customer = Tables<"customers">;
 export type Location = Tables<"locations">;
@@ -431,12 +445,44 @@ export function useAppointmentMutations() {
   const { profile, user, isDemoMode } = useAuth();
   const qc = useQueryClient();
   const demoCtx = useDemoData();
+  const agencyTz = useAgencyTimezone();
 
-  const create = useAdaptedMutation<Omit<TablesInsert<"appointments">, "agency_id">>({
+  const create = useAdaptedMutation<
+    Omit<TablesInsert<"appointments">, "agency_id"> & InterpreterAssignMeta
+  >({
     mutationFn: async (input) => {
+      const {
+        assignInterpreterId,
+        assignMode = "offer",
+        assignOverrideReason,
+        ...row
+      } = input;
+      const insertRow: Record<string, unknown> = { ...row };
+      if (assignInterpreterId) {
+        delete insertRow.interpreter_id;
+        delete insertRow.status;
+        delete insertRow.assignment_method;
+      }
       const { data, error } = await supabase
-        .from("appointments").insert({ ...input, agency_id: profile!.agency_id! }).select().single();
+        .from("appointments")
+        .insert({ ...insertRow, agency_id: profile!.agency_id! } as TablesInsert<"appointments">)
+        .select()
+        .single();
       if (error) throw error;
+      if (assignInterpreterId && data?.id) {
+        await assignInterpreterWithConflictCheck(
+          data.id,
+          assignInterpreterId,
+          assignMode === "confirm" ? "confirm" : "offer",
+          assignOverrideReason,
+        );
+        const { data: refreshed } = await supabase
+          .from("appointments")
+          .select()
+          .eq("id", data.id)
+          .single();
+        return refreshed ?? data;
+      }
       return data;
     },
     demoFn: (input) => createDemoAppointment(input, { ...demoCtx, userId: user?.id }),
@@ -454,8 +500,10 @@ export function useAppointmentMutations() {
     },
   });
 
-  const update = useAdaptedMutation<TablesUpdate<"appointments"> & { id: string }>({
-    mutationFn: async ({ id, ...input }) => {
+  const update = useAdaptedMutation<
+    TablesUpdate<"appointments"> & { id: string } & InterpreterAssignMeta
+  >({
+    mutationFn: async ({ id, assignInterpreterId, assignMode = "offer", assignOverrideReason, ...input }) => {
       // Capture previous interpreter_id BEFORE update so we can detect unassignment
       let previousInterpreterId: string | null = null;
       try {
@@ -465,9 +513,35 @@ export function useAppointmentMutations() {
       } catch {
         // Non-blocking — fall through to update
       }
-      const { data, error } = await supabase.from("appointments").update(input).eq("id", id).select().single();
+      const payload: Record<string, unknown> = { ...input };
+      if (assignInterpreterId) {
+        delete payload.interpreter_id;
+        delete payload.status;
+        delete payload.assignment_method;
+      }
+      const { data, error } = await supabase
+        .from("appointments")
+        .update(payload as TablesUpdate<"appointments">)
+        .eq("id", id)
+        .select()
+        .single();
       if (error) throw error;
-      return { ...data, __previousInterpreterId: previousInterpreterId };
+      let result = data;
+      if (assignInterpreterId) {
+        await assignInterpreterWithConflictCheck(
+          id,
+          assignInterpreterId,
+          assignMode === "confirm" ? "confirm" : "offer",
+          assignOverrideReason,
+        );
+        const { data: refreshed } = await supabase
+          .from("appointments")
+          .select()
+          .eq("id", id)
+          .single();
+        result = refreshed ?? data;
+      }
+      return { ...result, __previousInterpreterId: previousInterpreterId };
     },
     demoFn: ({ id, ...input }) => updateDemoAppointment(id, input, demoCtx),
     invalidateKeys: [["appointments"], ["paginated-appointments"], ["dashboard-grouped-counts"], ["dashboard-nonwindowed-counts"], ["dashboard-today-counts"], ["dashboard-recent-activity"]],
@@ -510,30 +584,89 @@ export function useAppointmentMutations() {
 
   // Bulk create for recurring appointments
   const bulkCreate = useAdaptedMutation<{
-    baseInput: any; dates: string[]; startTime: string; endTime: string;
+    baseInput: any;
+    dates: string[];
+    startTime: string;
+    endTime: string;
+    assignMode?: AssignMode;
+    assignOverrideReason?: string;
   }>({
-    mutationFn: async ({ baseInput, dates, startTime }) => {
+    mutationFn: async ({ baseInput, dates, startTime, assignMode = "offer", assignOverrideReason }) => {
       if (!profile?.agency_id) throw new Error("No agency");
       const origStart = baseInput.scheduled_start ? new Date(baseInput.scheduled_start) : null;
       const origEnd = baseInput.scheduled_end ? new Date(baseInput.scheduled_end) : null;
       const durationMins = origStart && origEnd ? differenceInMinutes(origEnd, origStart) : 60;
 
-      const parentRow: any = { ...baseInput, agency_id: profile.agency_id, recurrence_rule: baseInput.recurrence_rule };
-      const parentStart = new Date(`${dates[0]}T${startTime}`);
-      parentRow.scheduled_start = parentStart.toISOString();
-      parentRow.scheduled_end = addMinutes(parentStart, durationMins).toISOString();
+      const interpreterId: string | undefined = baseInput.interpreter_id ?? undefined;
+      const insertBase = { ...baseInput };
+      delete insertBase.interpreter_id;
+      delete insertBase.status;
+      delete insertBase.assignment_method;
 
-      const { data: parent, error: parentError } = await supabase.from("appointments").insert(parentRow).select().single();
+      const occurrences = dates.map((d) => {
+        const startIso = localToUtcIso(d, startTime, agencyTz);
+        if (!startIso) throw new Error(`Invalid start time for occurrence on ${d}`);
+        return {
+          start: startIso,
+          end: addMinutes(new Date(startIso), durationMins).toISOString(),
+        };
+      });
+
+      if (interpreterId) {
+        const batch = await checkInterpreterScheduleConflictsBatch(interpreterId, occurrences);
+        if (batch.has_conflict) {
+          throw new Error(
+            `Cannot create recurring series: interpreter has ${batch.conflicts.length} scheduling conflict(s). Choose another interpreter or adjust times.`,
+          );
+        }
+      }
+
+      const parentRow: any = {
+        ...insertBase,
+        agency_id: profile.agency_id,
+        recurrence_rule: baseInput.recurrence_rule,
+        scheduled_start: occurrences[0].start,
+        scheduled_end: occurrences[0].end,
+      };
+
+      const { data: parent, error: parentError } = await supabase
+        .from("appointments")
+        .insert(parentRow)
+        .select("id")
+        .single();
       if (parentError) throw parentError;
 
-      const children = dates.slice(1).map((d) => {
-        const childStart = new Date(`${d}T${startTime}`);
-        return { ...baseInput, agency_id: profile.agency_id, parent_recurring_id: parent.id, recurrence_rule: null, scheduled_start: childStart.toISOString(), scheduled_end: addMinutes(childStart, durationMins).toISOString() };
-      });
+      const children = dates.slice(1).map((d, idx) => ({
+        ...insertBase,
+        agency_id: profile.agency_id,
+        parent_recurring_id: parent.id,
+        recurrence_rule: null,
+        scheduled_start: occurrences[idx + 1].start,
+        scheduled_end: occurrences[idx + 1].end,
+      }));
+
+      let childIds: string[] = [];
       if (children.length > 0) {
-        const { error: childError } = await supabase.from("appointments").insert(children);
+        const { data: insertedChildren, error: childError } = await supabase
+          .from("appointments")
+          .insert(children)
+          .select("id");
         if (childError) throw childError;
+        childIds = (insertedChildren ?? []).map((c) => c.id);
       }
+
+      if (interpreterId) {
+        const rpcMode = assignMode === "confirm" ? "confirm" : "offer";
+        for (const apptId of [parent.id, ...childIds]) {
+          await assignInterpreterWithConflictCheck(
+            apptId,
+            interpreterId,
+            rpcMode,
+            assignOverrideReason,
+          );
+        }
+      }
+
       return { count: dates.length, parentId: parent.id };
     },
     demoFn: ({ baseInput, dates, startTime }) => {
